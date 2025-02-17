@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use hex::FromHex;
+use monero_rpc::{monero::util::address::PaymentId, HashString};
 use tokio::time::sleep;
-use xmrapp::{PaymentID, XMRClient, XMRPayment};
+use xmrapp::{XMRClient, XMRPayment};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,7 +18,8 @@ async fn main() -> anyhow::Result<()> {
     let t = tokio::spawn(async move {
         let amount = 1e9_f32.round() as u64;
         let (address, payment_id) = c.allocate_payment(amount).await.unwrap();
-        println!("Allocated payment with payment ID {} ({} pXMR):\n\n{}", payment_id, amount, address);
+        let pid_str = HashString(payment_id);
+        println!("Allocated payment with payment ID {} ({} pXMR):\n\n{}", pid_str, amount, address);
         // sleep(Duration::from_secs(120)).await;
         // Check payment info
         let payment = XMRPayment {
@@ -26,9 +29,7 @@ async fn main() -> anyhow::Result<()> {
             amount_requested: amount,
             ..Default::default()
         };
-        let mut b: [u8; 8] = [0;8];
-        hex::decode_to_slice("4435a6473cdc78bd", &mut b).unwrap();
-        let id = PaymentID(b);
+        let id = PaymentId::from_hex("4435a6473cdc78bd").unwrap();
         c.pending_payments.insert(id, payment);
         c.poll_network(id).await.unwrap();
         let value = c.pending_payments.get(&id).unwrap();

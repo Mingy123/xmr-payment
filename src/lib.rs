@@ -1,45 +1,11 @@
 #![allow(dead_code)]
 
-use std::{fmt::{self}, hash::{Hash, Hasher}, sync::atomic::{AtomicU64, Ordering}};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use monero_rpc::{RpcClientBuilder, WalletClient};
+use monero_rpc::{monero::util::address::PaymentId, RpcClientBuilder, WalletClient};
 
-
-#[derive(Clone, Copy)]
-pub struct PaymentID(pub [u8; 8]);
-impl fmt::Display for PaymentID {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
-    }
-}
-
-impl From<PaymentID> for monero_rpc::monero::util::address::PaymentId {
-    fn from(value: PaymentID) -> Self {
-        Self(value.0)
-    }
-}
-
-impl From<monero_rpc::monero::util::address::PaymentId> for PaymentID {
-    fn from(value: monero_rpc::monero::util::address::PaymentId) -> Self {
-        Self(value.0)
-    }
-}
-
-impl PartialEq for PaymentID {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for PaymentID {}
-
-impl Hash for PaymentID {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
-}
 
 #[derive(Clone, Copy, Default, Debug)]
 pub enum PaymentStatus {
@@ -64,7 +30,7 @@ pub struct XMRPayment {
 
 pub struct XMRClient {
     pub wallet_client: WalletClient,
-    pub pending_payments: DashMap<PaymentID, XMRPayment>,
+    pub pending_payments: DashMap<PaymentId, XMRPayment>,
     pub current_block_height: AtomicU64,
 }
 unsafe impl Send for XMRClient {}
@@ -110,7 +76,7 @@ impl XMRClient {
 
     /// Generates a payment address (integrated) by allocating a payment id.
     /// Returns the address as a string and the payment id.
-    pub async fn allocate_payment(&self, amount_requested: u64) -> anyhow::Result<(String, PaymentID)> {
+    pub async fn allocate_payment(&self, amount_requested: u64) -> anyhow::Result<(String, PaymentId)> {
         // get a new address if the payment id is already in use
         let (mut address, mut payment_id) = self.wallet_client.make_integrated_address(None, None).await?;
         let mut conflict = self.pending_payments.get(&payment_id.into());
@@ -139,7 +105,7 @@ impl XMRClient {
     /// Returns Expired if payment id is not found.
     ///
     /// Does **NOT** poll the RPC daemon for new changes - use `poll_network` instead.
-    pub fn query_payment(&self, payment_id: PaymentID) -> PaymentStatus {
+    pub fn query_payment(&self, payment_id: PaymentId) -> PaymentStatus {
         let payment = match self.pending_payments.get(&payment_id) {
             Some(v) => v,
             None => {
@@ -152,7 +118,7 @@ impl XMRClient {
 
     // TODO: Future Optimization: Store a list of payment IDs to query in 5 second time frames
     /// Polls the RPC daemon for progress on the payment.
-    pub async fn poll_network(&self, payment_id: PaymentID) -> anyhow::Result<PaymentStatus> {
+    pub async fn poll_network(&self, payment_id: PaymentId) -> anyhow::Result<PaymentStatus> {
         // Function goal: look through the network for a fulfilled payment id
         let mut pending_payment = match self.pending_payments.get_mut(&payment_id) {
             Some(value) => value,
