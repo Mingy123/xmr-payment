@@ -1,0 +1,12 @@
+[package]
+name = "xmrapp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monero-rpc = { git = "https://github.com/Mingy123/monero-rpc-rs", features = ["rpc_authentication"] }
+anyhow = "1.0"
+chrono = "0.4"
+dashmap = "6.1.0"
+hex = "0.4"
+tokio = { version = "1", features = ["full"] }
