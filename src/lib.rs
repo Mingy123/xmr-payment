@@ -116,7 +116,7 @@ impl<T: Clone> XMRClient<T> {
         Ok((address.to_string(), payment_id))
     }
 
-    /// Returns the status of a payment as stored in the hashmap.
+    /// Returns the payment as stored in the hashmap.
     /// Returns Expired if payment id is not found.
     ///
     /// Does **NOT** poll the RPC daemon for new changes - use `poll_payment` instead.

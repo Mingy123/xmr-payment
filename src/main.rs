@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use monero_rpc::HashString;
 use tokio::time::sleep;
-use xmrapp::{PaymentStatus, XMRClient};
+use xmr_payment::{PaymentStatus, XMRClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,10 +22,10 @@ async fn main() -> anyhow::Result<()> {
             let pid_str = HashString(payment_id);
             println!("Allocated payment with payment ID {} ({} pXMR):\n\n{}", pid_str, amount, address);
             // Check payment info
-            let payment = xmrapp::XMRPayment {
+            let payment = xmr_payment::XMRPayment {
                 created_block_height: 1799376,
                 created_timestamp: chrono::Utc::now(),
-                status: xmrapp::PaymentStatus::Pending,
+                status: xmr_payment::PaymentStatus::Pending,
                 amount_requested: amount,
                 amount_confirmed: 0,
                 amount_received: 0,
@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut b: [u8; 8] = [0;8];
             hex::decode_to_slice("4435a6473cdc78bd", &mut b).unwrap();
-            let payment_id = xmrapp::PaymentId(b);
+            let payment_id = xmr_payment::PaymentId(b);
             c.pending_payments.insert(payment_id, payment);
             let payment = c.poll_payment_immediate(payment_id).await.unwrap();
             println!("Payment info: {:#?}", payment);
