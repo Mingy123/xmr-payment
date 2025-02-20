@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
             hex::decode_to_slice("4435a6473cdc78bd", &mut b).unwrap();
             let payment_id = xmrapp::PaymentId(b);
             c.pending_payments.insert(payment_id, payment);
-            let payment = c.poll_payment(payment_id).await.unwrap();
+            let payment = c.poll_payment_immediate(payment_id).await.unwrap();
             println!("Payment info: {:#?}", payment);
             if payment.status == PaymentStatus::Confirmed {
                 println!("\n========================");

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{collections::{HashMap, VecDeque}, sync::{atomic::{AtomicU64, Ordering}, Mutex}};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -32,6 +32,7 @@ pub struct XMRClient<T: Clone = ()> {
     pub wallet_client: WalletClient,
     pub pending_payments: DashMap<PaymentId, XMRPayment<T>>,
     pub current_block_height: AtomicU64,
+    poll_queue: Mutex<VecDeque<PaymentId>>,
 }
 unsafe impl<T: Clone> Send for XMRClient<T> {}
 unsafe impl<T: Clone> Sync for XMRClient<T> {}
@@ -72,7 +73,8 @@ impl<T: Clone> XMRClient<T> {
         XMRClient {
             wallet_client: daemon,
             pending_payments: DashMap::new(),
-            current_block_height: AtomicU64::from(height.get())
+            current_block_height: AtomicU64::from(height.get()),
+            poll_queue: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -93,6 +95,7 @@ impl<T: Clone> XMRClient<T> {
         while let Some(ref conflict_value) = conflict {
             let payment_value = conflict_value.value();
             if payment_value.is_expired(current_block_height) {
+                // We allow replacement of this payment
                 break;
             }
             (address, payment_id) = self.wallet_client.make_integrated_address(None, None).await?;
@@ -136,13 +139,78 @@ impl<T: Clone> XMRClient<T> {
         Some(())
     }
 
-    // TODO: Future Optimization: Store a list of payment IDs to query in 5 second time frames
-    /// Polls the RPC daemon for progress on the payment.
-    pub async fn poll_payment(
+    /// Enqueues the payment for polling.
+    pub fn poll_payment(
+        &self,
+        payment_id: PaymentId
+    ) {
+        let mut lock = self.poll_queue.lock().unwrap();
+        lock.push_back(payment_id);
+    }
+
+    /// Polls all enqueued payments. Should be run around every 5 seconds.
+    ///
+    /// Returns a Vec of changed payments.
+    pub async fn poll_enqueued_payments(
+        &self,
+    ) -> anyhow::Result<Vec<XMRPayment<T>>> {
+        let ids = {
+            let mut lock = self.poll_queue.lock().unwrap();
+            lock.drain(..).collect() // "extract" all values, clearing them
+        };
+        let current_bheight = self.wallet_client.get_height().await?.get();
+        self.current_block_height.store(current_bheight, Ordering::SeqCst);
+        let payments = self.wallet_client.get_bulk_payments(ids, current_bheight-1000).await?;
+        #[derive(Default)]
+        struct PaymentIdSum {
+            received: u64,
+            confirmed: u64,
+        }
+        // Collate the payments received by the wallet client
+        let mut payment_id_sums: HashMap<PaymentId, PaymentIdSum> = HashMap::new();
+        for payment in payments {
+            let blocks_confirmed = current_bheight - payment.block_height;
+            let received = payment.amount.as_pico();
+            let mut confirmed = 0;
+            if blocks_confirmed > 5 {
+                confirmed = payment.amount.as_pico();
+            }
+            payment_id_sums.entry(payment.payment_id.0)
+                .and_modify(|val| {
+                    val.received += received;
+                    val.confirmed += confirmed;
+                })
+                .or_insert(PaymentIdSum{
+                    received,
+                    confirmed,
+                });
+        }
+        // Reflect the changes in self.pending_payments
+        let mut changed_payments: Vec<XMRPayment<T>> = Vec::new();
+        for (payment_id, sum) in payment_id_sums {
+            let mut lock = match self.pending_payments.get_mut(&payment_id) {
+                Some(val) => val,
+                // Ignore cases of unregistered payment id
+                None => continue,
+            };
+            lock.amount_confirmed = sum.confirmed;
+            lock.amount_received = sum.received;
+            if sum.confirmed >= lock.amount_requested {
+                lock.status = PaymentStatus::Confirmed
+            } else if sum.received >= lock.amount_requested {
+                lock.status = PaymentStatus::Received
+            }
+            changed_payments.push(lock.value().clone());
+        }
+        Ok(changed_payments)
+    }
+
+    /// Polls the RPC daemon for progress one payment.
+    /// Should not be used in most cases.
+    pub async fn poll_payment_immediate(
         &self,
         payment_id: PaymentId
     ) -> anyhow::Result<XMRPayment<T>> {
-        // Function goal: look through the network for a fulfilled payment id
         let mut pending_payment = match self.pending_payments.get_mut(&payment_id) {
             Some(value) => value,
             None => {
