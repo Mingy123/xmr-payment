@@ -86,7 +86,8 @@ impl<T: Clone> XMRClient<T> {
     /// Returns the address as a string and the payment id.
     pub async fn allocate_payment(
         &self,
-        amount_requested: u64
+        amount_requested: u64,
+        info: Option<T>
     ) -> anyhow::Result<(String, PaymentId)> {
         // get a new address if the payment id is already in use
         let (mut address, mut payment_id) = self.wallet_client.make_integrated_address(None, None).await?;
@@ -110,7 +111,7 @@ impl<T: Clone> XMRClient<T> {
             amount_requested,
             amount_received: 0,
             amount_confirmed: 0,
-            info: None,
+            info,
         });
         Ok((address.to_string(), payment_id))
     }

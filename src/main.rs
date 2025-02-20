@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
         loop {
 
             let amount = 1e9_f32.round() as u64;
-            let (address, payment_id) = c.allocate_payment(amount).await.unwrap();
+            let (address, payment_id) = c.allocate_payment(amount, None).await.unwrap();
             let pid_str = HashString(payment_id);
             println!("Allocated payment with payment ID {} ({} pXMR):\n\n{}", pid_str, amount, address);
             // Check payment info
