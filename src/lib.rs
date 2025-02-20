@@ -1,22 +1,20 @@
-#![allow(dead_code)]
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use monero_rpc::{monero::util::address::PaymentId, RpcClientBuilder, WalletClient};
+use monero_rpc::{RpcClientBuilder, WalletClient};
+pub use monero_rpc::monero::util::address::PaymentId;
 
 
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PaymentStatus {
-    #[default]
     Expired,
     Pending,
     Received,
     Confirmed,
 }
-#[derive(Clone, Copy, Default, Debug)]
-pub struct XMRPayment {
+#[derive(Clone, Debug)]
+pub struct XMRPayment<T: Clone> {
     pub created_timestamp: DateTime<Utc>,
     pub created_block_height: u64,
     pub status: PaymentStatus,
@@ -26,20 +24,22 @@ pub struct XMRPayment {
     pub amount_confirmed: u64,
     /// Requested amount in piconero (1e-12).
     pub amount_requested: u64,
+    /// Additional user information
+    pub info: Option<T>,
 }
 
-pub struct XMRClient {
+pub struct XMRClient<T: Clone = ()> {
     pub wallet_client: WalletClient,
-    pub pending_payments: DashMap<PaymentId, XMRPayment>,
+    pub pending_payments: DashMap<PaymentId, XMRPayment<T>>,
     pub current_block_height: AtomicU64,
 }
-unsafe impl Send for XMRClient {}
-unsafe impl Sync for XMRClient {}
+unsafe impl<T: Clone> Send for XMRClient<T> {}
+unsafe impl<T: Clone> Sync for XMRClient<T> {}
 
 // Let a payment last for 30 minutes or 15 blocks, whichever is longer
 
 
-impl XMRPayment {
+impl<T: Clone> XMRPayment<T> {
     fn is_expired(&self, current_block_height: u64) -> bool {
         let time_passed = Utc::now() - self.created_timestamp;
         if time_passed.num_minutes() > 30 {
@@ -53,8 +53,10 @@ impl XMRPayment {
 }
 
 
-impl XMRClient {
-
+impl<T: Clone> XMRClient<T> {
+    /// Creates a new XMRClient, a client to connect to a `monero-wallet-rpc` server.
+    ///
+    /// T will be the type of the additional info stored on each payment
     pub async fn new(
         rpc_address: String,
         wallet_file: String,
@@ -62,10 +64,10 @@ impl XMRClient {
     ) -> Self {
         println!("Setting up the client...");
         let client = RpcClientBuilder::new()
-            .build(rpc_address).expect("Could not connect to RPC daemon.");
+            .build(rpc_address).unwrap();
         let daemon = client.wallet();
         println!("Opening wallet {} ...", wallet_file);
-        daemon.open_wallet(wallet_file, wallet_password).await.expect("Could not open wallet.");
+        daemon.open_wallet(wallet_file, wallet_password).await.expect("Could not open wallet");
         let height = daemon.get_height().await.unwrap();
         XMRClient {
             wallet_client: daemon,
@@ -73,10 +75,17 @@ impl XMRClient {
             current_block_height: AtomicU64::from(height.get())
         }
     }
+}
+
+
+impl<T: Clone> XMRClient<T> {
 
     /// Generates a payment address (integrated) by allocating a payment id.
     /// Returns the address as a string and the payment id.
-    pub async fn allocate_payment(&self, amount_requested: u64) -> anyhow::Result<(String, PaymentId)> {
+    pub async fn allocate_payment(
+        &self,
+        amount_requested: u64
+    ) -> anyhow::Result<(String, PaymentId)> {
         // get a new address if the payment id is already in use
         let (mut address, mut payment_id) = self.wallet_client.make_integrated_address(None, None).await?;
         let mut conflict = self.pending_payments.get(&payment_id.into());
@@ -96,7 +105,9 @@ impl XMRClient {
             created_block_height: current_block_height,
             status: PaymentStatus::Pending,
             amount_requested,
-            ..Default::default()
+            amount_received: 0,
+            amount_confirmed: 0,
+            info: None,
         });
         Ok((address.to_string(), payment_id))
     }
@@ -104,26 +115,40 @@ impl XMRClient {
     /// Returns the status of a payment as stored in the hashmap.
     /// Returns Expired if payment id is not found.
     ///
-    /// Does **NOT** poll the RPC daemon for new changes - use `poll_network` instead.
-    pub fn query_payment(&self, payment_id: PaymentId) -> PaymentStatus {
-        let payment = match self.pending_payments.get(&payment_id) {
-            Some(v) => v,
-            None => {
-                return PaymentStatus::Expired;
-            }
-        };
-        let value = payment.value();
-        value.status
+    /// Does **NOT** poll the RPC daemon for new changes - use `poll_payment` instead.
+    pub fn query_payment(
+        &self,
+        payment_id: PaymentId
+    ) -> Option<XMRPayment<T>> {
+        let payment = self.pending_payments.get(&payment_id)?;
+        Some(payment.value().clone())
+    }
+
+    /// Sets the `info` field of the relevant XMRPayment.
+    /// Returns Some(()) on sucess and None if no XMRPayment was found.
+    pub fn set_payment_info(
+        &self,
+        payment_id: PaymentId,
+        payment_info: T
+    ) -> Option<()> {
+        let mut payment = self.pending_payments.get_mut(&payment_id)?;
+        payment.info = Some(payment_info);
+        Some(())
     }
 
     // TODO: Future Optimization: Store a list of payment IDs to query in 5 second time frames
     /// Polls the RPC daemon for progress on the payment.
-    pub async fn poll_network(&self, payment_id: PaymentId) -> anyhow::Result<PaymentStatus> {
+    pub async fn poll_payment(
+        &self,
+        payment_id: PaymentId
+    ) -> anyhow::Result<XMRPayment<T>> {
         // Function goal: look through the network for a fulfilled payment id
         let mut pending_payment = match self.pending_payments.get_mut(&payment_id) {
             Some(value) => value,
             None => {
-                return Ok(PaymentStatus::Expired)
+                return Err(anyhow::Error::msg(
+                    format!("Could not find payment of id {}", payment_id)
+                ));
             }
         };
         let created_bheight = pending_payment.created_block_height;
@@ -149,6 +174,6 @@ impl XMRClient {
         } else if received >= pending_payment.amount_requested {
             pending_payment.status = PaymentStatus::Received
         }
-        Ok(pending_payment.status)
+        Ok(pending_payment.value().clone())
     }
 }

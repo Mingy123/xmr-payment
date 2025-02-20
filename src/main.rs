@@ -1,13 +1,12 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use hex::FromHex;
-use monero_rpc::{monero::util::address::PaymentId, HashString};
+use monero_rpc::HashString;
 use tokio::time::sleep;
-use xmrapp::{XMRClient, XMRPayment};
+use xmrapp::{PaymentStatus, XMRClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = XMRClient::new(
+    let client = XMRClient::<()>::new(
         String::from("http://127.0.0.1:38082"),
         String::from("stage.keys"),
         None
@@ -16,24 +15,36 @@ async fn main() -> anyhow::Result<()> {
     let arc = Arc::new(client);
     let c = arc.clone();
     let t = tokio::spawn(async move {
-        let amount = 1e9_f32.round() as u64;
-        let (address, payment_id) = c.allocate_payment(amount).await.unwrap();
-        let pid_str = HashString(payment_id);
-        println!("Allocated payment with payment ID {} ({} pXMR):\n\n{}", pid_str, amount, address);
-        // sleep(Duration::from_secs(120)).await;
-        // Check payment info
-        let payment = XMRPayment {
-            created_block_height: 1799376,
-            created_timestamp: chrono::Utc::now(),
-            status: xmrapp::PaymentStatus::Pending,
-            amount_requested: amount,
-            ..Default::default()
-        };
-        let id = PaymentId::from_hex("4435a6473cdc78bd").unwrap();
-        c.pending_payments.insert(id, payment);
-        c.poll_network(id).await.unwrap();
-        let value = c.pending_payments.get(&id).unwrap();
-        println!("Payment info: {:#?}", value.value());
+        loop {
+
+            let amount = 1e9_f32.round() as u64;
+            let (address, payment_id) = c.allocate_payment(amount).await.unwrap();
+            let pid_str = HashString(payment_id);
+            println!("Allocated payment with payment ID {} ({} pXMR):\n\n{}", pid_str, amount, address);
+            // Check payment info
+            let payment = xmrapp::XMRPayment {
+                created_block_height: 1799376,
+                created_timestamp: chrono::Utc::now(),
+                status: xmrapp::PaymentStatus::Pending,
+                amount_requested: amount,
+                amount_confirmed: 0,
+                amount_received: 0,
+                info: None
+            };
+            let mut b: [u8; 8] = [0;8];
+            hex::decode_to_slice("4435a6473cdc78bd", &mut b).unwrap();
+            let payment_id = xmrapp::PaymentId(b);
+            c.pending_payments.insert(payment_id, payment);
+            let payment = c.poll_payment(payment_id).await.unwrap();
+            println!("Payment info: {:#?}", payment);
+            if payment.status == PaymentStatus::Confirmed {
+                println!("\n========================");
+                println!("PAYMENT CONFIRMED!");
+                println!("========================\n");
+            }
+            sleep(Duration::from_secs(120)).await;
+
+        }
     });
     t.await.unwrap();
 
